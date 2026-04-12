@@ -59,7 +59,7 @@ class FatigueScorer:
             recent_poses = window.head_poses[-HEAD_DOWN_RECENT_FRAMES:]
             head_down_count = sum(
                 1 for pose in recent_poses 
-                if pose is not None and pose.pitch > self._config.HEAD_PITCH_THRESHOLD_DEG
+                if pose is not None and pose.pitch < - self._config.HEAD_PITCH_THRESHOLD_DEG
             )
             head_down = head_down_count >= 3
 
