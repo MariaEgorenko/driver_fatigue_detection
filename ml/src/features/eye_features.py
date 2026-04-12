@@ -2,17 +2,13 @@ import numpy as np
 from typing import List, Optional
 
 from ml.src.types import FaceLandmarks, BlinkEvent, FeatureWindow
+from ml.src.features.utils import euclidean
 
 
 # MediaPipe indexes for the right eye (relative to the entire 468-point grid)
 # Order: p1(outer corner), p2(top), p3(top), p4(inner corner), p5(bottom), p6(bottom)
 RIGHT_EYE_INDICES = [33, 160, 158, 133, 153, 144]
 LEFT_EYE_INDICES = [362, 385, 387, 263, 373, 380]
-
-def _euclidean(p1: np.ndarray, p2: np.ndarray) -> float:
-    """Euclidean distance in normalized coordinates (x, y only)."""
-    return float(np.linalg.norm(p1[:2] - p2[:2]))
-
 
 class EyeAnalyzer:
     def __init__(self, config) -> None:
@@ -32,11 +28,11 @@ class EyeAnalyzer:
 
         # Right eye
         r_p1, r_p2, r_p3, r_p4, r_p5, r_p6 = [points[i] for i in RIGHT_EYE_INDICES]
-        r_ear = (_euclidean(r_p2, r_p6) + _euclidean(r_p3, r_p5)) / (2 * _euclidean(r_p1, r_p4) + 1e-6)
+        r_ear = (euclidean(r_p2, r_p6) + euclidean(r_p3, r_p5)) / (2 * euclidean(r_p1, r_p4) + 1e-6)
 
         # Left eye
         l_p1, l_p2, l_p3, l_p4, l_p5, l_p6 = [points[i] for i in LEFT_EYE_INDICES]
-        l_ear = (_euclidean(l_p2, l_p6) + _euclidean(l_p3, l_p5)) / (2 * _euclidean(l_p1, l_p4) + 1e-6)
+        l_ear = (euclidean(l_p2, l_p6) + euclidean(l_p3, l_p5)) / (2 * euclidean(l_p1, l_p4) + 1e-6)
 
         return (r_ear + l_ear) / 2.0
     
