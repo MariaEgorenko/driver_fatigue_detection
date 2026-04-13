@@ -1,0 +1,41 @@
+# ── Стадия 1: сборка зависимостей ─────────────────────────────
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ COPY requirements.txt requirements.txt
+
+ RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --prefix=/install --no-build-isolation -r requirements.txt
+
+
+# ── Стадия 2: финальный образ ──────────────────────────────────
+FROM python:3.11-slim AS runtime
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /install /usr/local
+
+COPY ml/ ./ml/
+COPY backend/ ./backend/
+COPY face_landmarker.task ./face_landmarker.task
+
+RUN useradd --create-home --shell /bin/bash appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-access-log"]

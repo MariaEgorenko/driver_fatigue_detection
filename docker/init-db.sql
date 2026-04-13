@@ -1,0 +1,9 @@
+-- init-db.sql
+CREATE DATABASE mlflow_db;
+
+GRANT ALL PRIVILEGES ON DATABASE mlflow_db TO CURRENT_USER;
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+\c mlflow_db
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";

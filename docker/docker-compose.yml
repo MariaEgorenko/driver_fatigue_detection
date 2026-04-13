@@ -1,0 +1,145 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+networks:
+  fatigue-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  mlruns:
+  grafana_data:
+  prometheus_data:
+
+services:
+
+  # ── PostgreSQL ────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    networks: [fatigue-net]
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGUSER: ${POSTGRES_USER}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── MLflow ────────────────────────────────────────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.16.2
+    restart: unless-stopped
+    networks: [fatigue-net]
+    logging: *default-logging
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      MLFLOW_TRACKING_URI: http://0.0.0.0:5000
+    command:
+      - python
+      - -m
+      - mlflow
+      - server
+      - --backend-store-uri
+      - ${MLFLOW_DB_URL}
+      - --default-artifact-root
+      - /mlruns
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+    volumes:
+      - mlruns:/mlruns
+    ports:
+      - "5000:5000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── Backend (Dev Mode) ────────────────────────────────────────
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    image: fatigue-backend:dev
+    restart: unless-stopped
+    networks: [fatigue-net]
+    logging: *default-logging
+    depends_on:
+      db:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../backend:/app/backend
+      - ../ml:/app/ml
+    command: ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  # ── Monitoring (Prometheus & Grafana) ─────────────────────────
+  pg_exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    restart: unless-stopped
+    networks: [fatigue-net]
+    logging: *default-logging
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATA_SOURCE_NAME: ${DATA_SOURCE_NAME}
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    restart: unless-stopped
+    networks: [fatigue-net]
+    logging: *default-logging
+    depends_on:
+      - backend
+      - pg_exporter
+    volumes:
+      - ../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    restart: unless-stopped
+    networks: [fatigue-net]
+    logging: *default-logging
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD}
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
