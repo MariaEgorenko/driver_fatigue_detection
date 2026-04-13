@@ -75,6 +75,10 @@ class AnalysisSessionStatus(BaseModel):
     progress: float = Field(ge=0.0, le=1.0, default=0.0)
     created_at: datetime
     estimated_completion: datetime | None = None
+    overall_fatigue_level: FatigueLevel | None = None
+    frames_analyzed: int | None = None
+    duration_sec: float | None = None
+    error: str | None = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
