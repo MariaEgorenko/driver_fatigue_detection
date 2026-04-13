@@ -41,7 +41,6 @@ mlruns/
 *.h5
 *.pth
 *.onnx
-models/
 
 # OS
 .DS_Store
