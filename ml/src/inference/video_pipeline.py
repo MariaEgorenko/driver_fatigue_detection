@@ -164,6 +164,9 @@ class VideoPipeline:
     ) -> Iterator[FrameResult]:
         """FrameResult generator for a video file or camera."""
         cap = cv2.VideoCapture(source)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        frame_idx = 0
+        last_timestamp_sec = -1.0
 
         if not cap.isOpened():
             raise ValueError(f"Cannot open: {source}")
@@ -174,15 +177,19 @@ class VideoPipeline:
                 if not ret:
                     break
 
-                timestamp_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
-                timestamp_sec = timestamp_ms / 1000.0 if timestamp_ms > 0 else time.time()
+                timestamp_sec = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
                 
+                if timestamp_sec <= last_timestamp_sec:
+                    timestamp_sec = last_timestamp_sec + (1.0 / fps)
+
+                last_timestamp_sec = timestamp_sec
+
                 result = self.process_frame(frame, timestamp=timestamp_sec)
                 yield result
+                frame_idx += 1
 
         finally:
             cap.release()
-            self.close()
 
     def reset_session(self) -> None:
         """Reset the status for a new session."""
