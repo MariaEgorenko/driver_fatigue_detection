@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.models.db_models import AnalysisSession, FatigueEventDB, FrameResultDB
+from backend.app.schemas.analysis import EventFilter, EventsResponse, FatigueEventSchema
 from backend.app.core.enums import SessionStatus, SourceType
 
 logger = logging.getLogger(__name__)
@@ -130,3 +131,60 @@ class AnalysisService:
         sessions = result.scalars().all()
         
         return list(sessions), total
+    
+    async def get_session_events(
+        self, session_id: uuid.UUID,
+        filters: EventFilter    
+    ) -> EventsResponse | None:
+        session_result = await self._db.get(AnalysisSession, session_id)
+        if not session_result:
+            return None
+        
+        conditions = [FatigueEventDB.session_id == session_id]
+
+        if filters.event_type:
+            conditions.append(FatigueEventDB.event_type == filters.event_type)
+
+        if filters.severity:
+            conditions.append(FatigueEventDB.severity == filters.severity)
+
+        if filters.start_time is not None:
+            conditions.append(FatigueEventDB.timestamp_sec >= filters.start_time)
+
+        if filters.end_time is not None:
+            conditions.append(FatigueEventDB.timestamp_sec <= filters.end_time)
+
+        count_stmt = (
+            select(func.count())
+            .select_from(FatigueEventDB)
+            .where(*conditions)
+        )
+        total = await self._db.scalar(count_stmt) or 0
+
+        stmt = (
+            select(FatigueEventDB)
+            .where(*conditions)
+            .order_by(FatigueEventDB.timestamp_sec.asc())
+            .limit(filters.limit)
+            .offset(filters.offset)
+        )
+        result = await self._db.scalars(stmt)
+        events = result.all()
+
+        event_schemas = [
+            FatigueEventSchema(
+                event_type=event.event_type,
+                timestamp_sec=event.timestamp_sec,
+                duration_sec=event.duration_sec,
+                severity=event.severity,
+                metadata=event.metadata_,
+            )
+            for event in events
+        ]
+
+        return EventsResponse(
+            events=event_schemas,
+            total=total,
+            limit=filters.limit,
+            offset=filters.offset,
+        )
