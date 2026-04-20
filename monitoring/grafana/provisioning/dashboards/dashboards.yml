@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: 'Fatigue Monitoring'
+    orgId: 1
+    folder: 'Driver Fatigue Dashboards'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    options:
+      path: /etc/grafana/dashboards
