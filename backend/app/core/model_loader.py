@@ -1,6 +1,9 @@
+import os
+
 import logging
 import mlflow
 from mlflow.tracking import MlflowClient
+from pydantic import ValidationError
 
 from backend.app.core.config import get_settings, Settings
 from ml.src.inference.video_pipeline import VideoPipeline
@@ -18,12 +21,15 @@ def load_model_from_registry(
     settings = get_settings()
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
 
+    os.environ["MLFLOW_HTTP_REQUEST_TIMEOUT"] = "5"
+
     try:
         client = MlflowClient()
         versions = client.get_latest_versions(model_name, stages=[stage])
 
         if not versions:
-            raise ValueError(f"No {stage} version for {model_name}")
+            logger.warning(f"No {stage} version for {model_name} in MLflow. Using default config.")
+            return VideoPipeline(settings)
 
         version = versions[0]
         run = client.get_run(version.run_id)
@@ -39,13 +45,17 @@ def load_model_from_registry(
         merged_data = settings.model_dump()
         merged_data.update(overrides)
 
-        # согласно аннотациям в классе Settings!
         mlflow_settings = Settings.model_validate(merged_data)
 
         pipeline = VideoPipeline(mlflow_settings)
         logger.info(f"Loaded model {model_name} v{version.version} from MLflow ({stage})")
         return pipeline
 
+    except ValidationError as ve:
+        logger.error(
+            f"Invalid MLflow parametrs for model {model_name}: {ve}\nFalling back to defaults."
+        )
+
     except Exception as e:
-        logger.warning(f"MLflow load failed: {e}. Using default config.")
+        logger.warning(f"MLflow load failed: {e}. Using default config.", exc_info=True)
         return VideoPipeline(settings)

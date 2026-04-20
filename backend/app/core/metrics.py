@@ -17,7 +17,6 @@ from starlette.routing import Match
 metrics_router = APIRouter()
 
 # --- ML & Business Metrics ---
-
 model_info = Info("fatigue_model", "Loaded model information")
 
 frame_processing_duration = Histogram(
@@ -35,7 +34,6 @@ fatigue_events_total = Counter(
 analysis_errors_total = Counter("fatigue_analysis_errors_total", "Analysis errors", ["error_type"])
 
 # --- HTTP Metrics ---
-
 requests_total = Counter(
     "fatigue_api_requests_total", "Total API requests", ["method", "endpoint", "status_code"]
 )
@@ -51,7 +49,6 @@ request_duration_seconds = Histogram(
 class MetricsMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         start_time = time.time()
-        status_code = 500 
 
         try:
             response = await call_next(request)
@@ -64,14 +61,23 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             duration = time.time() - start_time
             
             endpoint = request.url.path
-            for route in request.app.routes:
-                match, _ = route.matches(request.scope)
-                if match == Match.FULL:
-                    endpoint = route.path
-                    break
+            is_matched = False
+
+            if hasattr(request.app, "routes"):
+                for route in request.app.routes:
+                    match, _ = route.matches(request.scope)
+                    if match == Match.FULL:
+                        endpoint = route.path
+                        is_matched = True
+                        break
             
-            if status_code == 404:
-                endpoint = "/404_not_found"
+            if not is_matched:
+                if status_code == 404:
+                    endpoint = "404_not_found"
+                elif status_code == 405:
+                    endpoint = "405_method_not_allowed"
+                else:
+                    endpoint = "/unmatched_route"
 
             requests_total.labels(
                 method=request.method,
