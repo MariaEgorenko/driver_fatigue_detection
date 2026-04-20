@@ -22,7 +22,9 @@ class FatigueScorer:
         self._config = config
         self._eye = EyeAnalyzer(config)
         self._mouth = MouthAnalyzer(config)
-        self._head = HeadPoseEstimator()
+        self._last_score_time = -100.0
+        self._last_headdown_event_time = -100.0
+        self._last_reported_absence_start = -100.0
 
     def score(self, window: FeatureWindow) -> FatigueScore:
         """Aggregate attributes in FatigueScore."""
@@ -59,9 +61,9 @@ class FatigueScorer:
             recent_poses = window.head_poses[-HEAD_DOWN_RECENT_FRAMES:]
             head_down_count = sum(
                 1 for pose in recent_poses 
-                if pose is not None and pose.pitch < - self._config.HEAD_PITCH_THRESHOLD_DEG
+                if pose is not None and abs(pose.pitch) > self._config.HEAD_PITCH_THRESHOLD_DEG
             )
-            head_down = head_down_count >= 3
+            head_down = head_down_count >= (HEAD_DOWN_RECENT_FRAMES * 0.7)
 
         # 5. Determine face_absen
         face_absent = False
@@ -75,30 +77,16 @@ class FatigueScorer:
         # 6. Build events list
         events: List[FatigueEvent] = []
 
-        # Eye closure events
-        if perclos > self._config.PERCLOS_SEVERE:
-            events.append(
-                FatigueEvent(
-                    event_type="eye_closure",
-                    timestamp=current_time,
-                    duration_sec=None,
-                    severity="high",
-                    metadata={"perclos": perclos},
-                )
-            )
-        elif perclos > self._config.PERCLOS_MILD:
-            events.append(
-                FatigueEvent(
-                    event_type="eye_closure",
-                    timestamp=current_time,
-                    duration_sec=None,
-                    severity="low",
-                    metadata={"perclos": perclos},
-                )
-            )
+        new_closures = [
+            c for c in window.eye_closures_events
+            if (c.timestamp + (c.duration_sec or 0)) > self._last_score_time
+        ]
+        events.extend(new_closures)
+
+        new_yawns = [y for y in recent_yawns if y.timestamp > self._last_score_time]
 
         # Yawn events
-        for yawn in recent_yawns:
+        for yawn in new_yawns:
             severity = "high" if yawn_count >= 4 else "medium" if yawn_count >= 2 else "low"
             events.append(
                 FatigueEvent(
@@ -112,19 +100,26 @@ class FatigueScorer:
 
         # Head down event
         if head_down:
-            events.append(
-                FatigueEvent(
-                    event_type="head_down",
-                    timestamp=current_time,
-                    duration_sec=None,
-                    severity="medium",
-                    metadata={"pitch_threshold": self._config.HEAD_PITCH_THRESHOLD_DEG},
+            if current_time - self._last_headdown_event_time >= 2.0:
+                events.append(
+                    FatigueEvent(
+                        event_type="head_down",
+                        timestamp=current_time,
+                        duration_sec=None,
+                        severity="medium",
+                        metadata={"pitch_threshold": self._config.HEAD_PITCH_THRESHOLD_DEG},
+                    )
                 )
-            )
+                self._last_headdown_event_time = current_time
 
         # Face absent events
-        for absence in window.absence_events:
-            if current_time - absence.start_time <= YAWN_COUNT_WINDOW_SEC:
+        new_absences = [
+            a for a in window.absence_events
+            if a.start_time > self._last_reported_absence_start
+        ]
+
+        for absence in new_absences:
+            if absence.duration_sec >= self._config.FACE_ABSENT_THRESHOLD_SEC:
                 events.append(
                     FatigueEvent(
                         event_type="face_absent",
@@ -134,11 +129,17 @@ class FatigueScorer:
                         metadata={"duration": absence.duration_sec},
                     )
                 )
+                self._last_reported_absence_start = absence.start_time
 
         # 7. Determine level
         level = self._determine_level(
-            perclos=perclos, yawn_count=yawn_count, head_down=head_down, face_absent=face_absent
+            perclos=perclos,
+            yawn_count=yawn_count,
+            head_down=head_down,
+            face_absent=face_absent
         )
+
+        self._last_score_time = current_time
 
         # 8. Calculate confidence
         confidence = self._calculate_confidence(

@@ -1,7 +1,10 @@
 import numpy as np
 from typing import List, Optional
 
-from ml.src.types import FaceLandmarks, BlinkEvent, FeatureWindow
+from ml.src.types import (
+    FaceLandmarks, BlinkEvent,
+    FeatureWindow, FatigueEvent
+)
 from ml.src.features.utils import euclidean
 
 
@@ -25,13 +28,19 @@ class EyeAnalyzer:
     def compute_ear(self, landmarks: FaceLandmarks) -> float:
         """The average EAR for both eyes according to the Soukupova & Cech formula."""
         points = landmarks.points
+        w = landmarks.frame_width
+        h = landmarks.frame_height
+
+        def to_px(pt):
+            """Normalized point (x,y,z) -> pixel (x,y)"""
+            return np.array([pt[0] * w, pt[1] * h])
 
         # Right eye
-        r_p1, r_p2, r_p3, r_p4, r_p5, r_p6 = [points[i] for i in RIGHT_EYE_INDICES]
+        r_p1, r_p2, r_p3, r_p4, r_p5, r_p6 = [to_px(points[i]) for i in RIGHT_EYE_INDICES]
         r_ear = (euclidean(r_p2, r_p6) + euclidean(r_p3, r_p5)) / (2 * euclidean(r_p1, r_p4) + 1e-6)
 
         # Left eye
-        l_p1, l_p2, l_p3, l_p4, l_p5, l_p6 = [points[i] for i in LEFT_EYE_INDICES]
+        l_p1, l_p2, l_p3, l_p4, l_p5, l_p6 = [to_px(points[i]) for i in LEFT_EYE_INDICES]
         l_ear = (euclidean(l_p2, l_p6) + euclidean(l_p3, l_p5)) / (2 * euclidean(l_p1, l_p4) + 1e-6)
 
         return (r_ear + l_ear) / 2.0
@@ -50,13 +59,13 @@ class EyeAnalyzer:
             if ts >= window_start and ear > 0.0
         ]
 
-        if not valid_ears:
+        if len(valid_ears) < 30:
             return 0.0
         
         closed_count = sum(1 for ear in valid_ears if ear < self._ear_threshold)
         return closed_count / len(valid_ears)
     
-    def detect_blinks(self, window: FeatureWindow) -> List[BlinkEvent]:
+    def detect_blinks_and_closures(self, window: FeatureWindow) -> List[BlinkEvent]:
         """Return the list of new blinkevents for the last added frame.
         
         State machine:
@@ -78,6 +87,7 @@ class EyeAnalyzer:
             return []
         
         blinks = []
+        closures = []
 
         if not self._in_closure:
             # Currently open, check if started closing
@@ -89,7 +99,9 @@ class EyeAnalyzer:
             # Currently closing/closed, check if opened again
             if last_ear >= self._ear_threshold:
                 if self._closure_start_time is not None:
-                    duration_ms = (last_timestamp - self._closure_start_time) * 1000
+                    duration_sec = last_timestamp - self._closure_start_time
+                    duration_ms = duration_sec * 1000
+
                     if self._blink_min_ms <= duration_ms <= self._blink_max_ms:
                         blinks.append(
                             BlinkEvent(
@@ -98,6 +110,18 @@ class EyeAnalyzer:
                                 min_ear=self._min_ear_in_closure,
                             )
                         )
+                    elif duration_ms > self._blink_max_ms:
+                        severity = "high" if duration_sec >= 1.5 else "medium"
+                        closures.append(
+                            FatigueEvent(
+                                event_type="eye_closure",
+                                timestamp=self._closure_start_time,
+                                duration_sec=duration_sec,
+                                severity=severity,
+                                metadata={"min_ear": self._min_ear_in_closure}
+                            )
+                        )
+
                 # Reset state
                 self._in_closure = False
                 self._closure_start_time = None
@@ -106,7 +130,7 @@ class EyeAnalyzer:
                 # Continue closing
                 self._min_ear_in_closure = min(self._min_ear_in_closure, last_ear)
 
-        return blinks
+        return blinks, closures
     
     def blink_rate(self, window: FeatureWindow) -> float:
         """Blink rate in blinks per minute.

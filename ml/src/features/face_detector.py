@@ -29,7 +29,10 @@ class FaceDetector:
             VisionTaskRunningMode.VIDEO if is_video_stream else VisionTaskRunningMode.IMAGE
         )
 
-        base_options = BaseOptions(model_asset_path=model_path)
+        base_options = BaseOptions(
+            model_asset_path=model_path,
+            delegate=BaseOptions.Delegate.CPU
+        )
         options = FaceLandmarkerOptions(
             base_options=base_options,
             running_mode=running_mode,
@@ -40,6 +43,7 @@ class FaceDetector:
 
         self._detector = FaceLandmarker.create_from_options(options)
         self._closed = False
+        self._last_timestamp_ms = -1
 
     def detect(
         self,
@@ -68,7 +72,13 @@ class FaceDetector:
         # Processing based on the selected mode
         if self.is_video_stream:
             # For VIDEO mode, MediaPipe expects the time in milliseconds (integer)
-            timestamp_ms = int(timestamp * 1000)
+            timestamp_ms = int(round(timestamp * 1000))
+
+            if timestamp_ms <= self._last_timestamp_ms:
+                timestamp_ms = self._last_timestamp_ms + 1
+
+            self._last_timestamp_ms = timestamp_ms
+
             results = self._detector.detect_for_video(mp_image, timestamp_ms)
         else:
             results = self._detector.detect(mp_image)

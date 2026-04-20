@@ -78,9 +78,11 @@ class VideoPipeline:
                 self._window.head_poses.append(head_pose)
 
             # Event detection
-            blinks = self._eye.detect_blinks(self._window)
+            blinks, closures = self._eye.detect_blinks_and_closures(self._window)
             if blinks:
                 self._window.blink_events.extend(blinks)
+            if closures:
+                self._window.eye_closures_events.extend(closures)
 
             yawns = self._mouth.detect_yawn(self._window)
             if yawns:
@@ -154,22 +156,39 @@ class VideoPipeline:
         if len(self._window.head_poses) > frames_kept:
             self._window.head_poses = self._window.head_poses[-frames_kept:]
 
-        self._window.blink_events = [e for e in self._window.blink_events if e.timestamp >= cutoff_time]
-        self._window.yawn_events = [e for e in self._window.yawn_events if e.timestamp >= cutoff_time]
-        self._window.absence_events = [e for e in self._window.absence_events if e.start_time >= cutoff_time]
+        self._window.blink_events = [
+            e for e in self._window.blink_events 
+            if e.timestamp >= cutoff_time
+        ]
+        self._window.yawn_events = [
+            e for e in self._window.yawn_events 
+            if e.timestamp >= cutoff_time
+        ]
+        self._window.absence_events = [
+            e for e in self._window.absence_events 
+            if e.start_time >= cutoff_time
+        ]
+        self._window.eye_closures_events = [
+            e for e in self._window.eye_closures_events 
+            if e.timestamp >= cutoff_time
+        ]
 
     def process_video(
         self,
         source: Union[str, int],
     ) -> Iterator[FrameResult]:
         """FrameResult generator for a video file or camera."""
+        self.reset_session()
+
         cap = cv2.VideoCapture(source)
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         frame_idx = 0
-        last_timestamp_sec = -1.0
+        last_timestamp_ms = -1.0
 
         if not cap.isOpened():
             raise ValueError(f"Cannot open: {source}")
+
+        frame_step_ms = max(1, int(1000.0 / fps))
 
         try:
             while True:
@@ -177,12 +196,14 @@ class VideoPipeline:
                 if not ret:
                     break
 
-                timestamp_sec = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-                
-                if timestamp_sec <= last_timestamp_sec:
-                    timestamp_sec = last_timestamp_sec + (1.0 / fps)
+                current_timestamp_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC))
 
-                last_timestamp_sec = timestamp_sec
+                if current_timestamp_ms <= last_timestamp_ms:
+                    current_timestamp_ms = last_timestamp_ms + frame_step_ms
+
+                last_timestamp_ms = current_timestamp_ms
+
+                timestamp_sec = current_timestamp_ms / 1000.0
 
                 result = self.process_frame(frame, timestamp=timestamp_sec)
                 yield result
@@ -197,6 +218,31 @@ class VideoPipeline:
         self._frame_counter = 0
         self._presence.reset()
         self._last_result = None
+
+        if hasattr(self, '_head'):
+            self._head.reset_calibration()
+
+        if hasattr(self, '_mouth') and self._mouth is not None:
+            self._mouth._last_processed_timestamp = -100.0
+            self._mouth._yawn_state = "closed"
+            self._mouth._yawn_start_time = None
+            self._mouth._max_mar_in_yawn = 0.0
+            self._mouth._false_start_counter = 0
+            self._mouth._closed_start_time = None
+
+        if hasattr(self, '_eye') and getattr(self, '_eye', None) is not None:
+            self._eye._last_processed_timestamp = -100.0
+            self._eye._blink_state = "open"
+            self._eye._closed_start_time = None
+            self._eye._false_start_counter = 0
+
+        if hasattr(self, '_scorer'):
+            self._scorer._last_score_time = -100.0
+            self._scorer._last_headdown_event_time = -100.0
+            self._scorer._last_reported_absence_start = -100.0
+
+
+
 
     def close(self) -> None:
         """Forcibly release detector resources."""

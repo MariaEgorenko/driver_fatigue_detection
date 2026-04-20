@@ -62,6 +62,7 @@ class FeatureWindow:
     yawn_events: List[YawnEvent] = field(default_factory=list)
     absence_events: List[AbsenceEvent] = field(default_factory=list)
     face_detected_flags: List[bool] = field(default_factory=list)
+    eye_closures_events: List['FatigueEvent'] = field(default_factory=list)
 
 
 FatigueLevel = Literal["alert", "mild_fatigue", "severe_fatigue"]
