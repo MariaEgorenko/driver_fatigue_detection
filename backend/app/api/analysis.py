@@ -1,5 +1,6 @@
 import time
 import os
+from pathlib import Path
 import shutil
 import tempfile
 import logging
@@ -8,11 +9,15 @@ import numpy as np
 import asyncio
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import (
+    APIRouter, Depends, UploadFile,
+    File, Form, HTTPException,
+    BackgroundTasks, Request,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.dependencies import get_ml_pipeline
-from backend.app.core.database import get_db, AsyncSessionLocal
+from backend.app.core.dependencies import get_ml_pipeline, get_streaming_pipeline
+from backend.app.core.database import get_db
 from backend.app.core.config import get_settings
 from backend.app.core.metrics import (
     frame_processing_duration,
@@ -71,18 +76,30 @@ def convert_landmarks_to_schema(landmarks) -> FaceLandmarksSchema | None:
 
 @router.post("/frame", response_model=FrameAnalysisResponse)
 async def analyze_frame(
+    request: Request,
     frame: UploadFile = File(..., description="Image file (JPEG or PNG)"),
-    session_id: str = Form(..., description="Session ID for tracking"),
-    timestamp: float = Form(default=None, description="Unix timestamp of the frame"),
-    pipeline = Depends(get_ml_pipeline),
+    session_id: str | None = Form(default=None, description="Session ID for tracking"),
+    timestamp: float | None = Form(default=None, description="Unix timestamp of the frame")
 ):
     """Real-time single frame analysis."""
+    if not session_id:
+        session_id = str(uuid4())
+
+    pipeline = get_streaming_pipeline(session_id, request)
+
     start_time = time.time()
 
     try:
-        contents = await frame.read()
-        if len(contents) > 10 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="File size exceeds 10MB")
+        MAX_FRAME_SIZE = settings.MAX_FRAME_SIZE_MB * 1024 * 1024
+        chunks = []
+        total = 0
+        while chunk := await frame.read(65536):
+            total += len(chunk)
+            if total > MAX_FRAME_SIZE:
+                raise HTTPException(status_code=413, detail="File size exceeds 10MB")
+            chunks.append(chunk)
+        
+        contents = b"".join(chunks)
 
         nparr = np.frombuffer(contents, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -110,9 +127,12 @@ async def analyze_frame(
         score_schema = convert_fatigue_score_to_schema(result.fatigue_score)
         landmarks_schema = convert_landmarks_to_schema(result.landmarks)
 
-        try:
-            session_uuid = UUID(session_id)
-        except ValueError:
+        if session_id:
+            try:
+                session_uuid = UUID(session_id)
+            except ValueError:
+                raise HTTPException(status_code=422, detail=f"Invalid session_id format: '{session_id}'")
+        else:
             session_uuid = uuid4()
 
         return FrameAnalysisResponse(
@@ -127,54 +147,92 @@ async def analyze_frame(
         raise
     except Exception as e:
         logger.error(f"Error processing frame: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-    
-def _run_ml_pipeline_sync(pipeline, tmp_path):
-    """A synchronous function that will perform heavy ML in a separate thread"""
-    return list(pipeline.process_video(tmp_path))
+        raise HTTPException(status_code=500, detail=f"Internal server error")    
 
 async def _process_video_background(
     session_id: UUID,
     tmp_path: str,
     tmp_dir: str,
     pipeline,
+    db_sessionmaker,
 ):
     """Background task. Uses ITS OWN DATABASE session."""
-    async with AsyncSessionLocal() as db:
+    if db_sessionmaker is None:
+        logger.error("No database sessionmaker provided to background task")
+        return
+    
+    async with db_sessionmaker() as db:
         service = AnalysisService(db)
         
+        incremented = False
         try:
             await service.update_session(session_id, status="processing", progress=0.0)
             await db.commit()
             active_sessions.inc()
+            incremented = True
 
             start_time = time.time()
-            
-            results = await asyncio.to_thread(_run_ml_pipeline_sync, pipeline, tmp_path)
-            
-            total_frames = len(results)
             events_collected = []
             worst_level = "alert"
+            total_frames = 0
 
-            for result in results:
-                if result.fatigue_score:
-                    score = result.fatigue_score
-                    if score.level == "severe_fatigue":
-                        worst_level = "severe_fatigue"
-                    elif score.level == "mild_fatigue" and worst_level == "alert":
-                        worst_level = "mild_fatigue"
+            sync_gen = pipeline.process_video(tmp_path)
 
-                    if score.events:
-                        events_collected.extend([
-                            {
-                                "event_type": e.event_type,
-                                "timestamp_sec": e.timestamp,
-                                "duration_sec": e.duration_sec,
-                                "severity": e.severity,
-                                "metadata": e.metadata,
-                            }
-                            for e in score.events
-                        ])
+            seen_events = set()
+
+            def get_next_chunk(generator, chunk_size=50):
+                chunk = []
+                try:
+                    for _ in range(chunk_size):
+                        chunk.append(next(generator))
+                except StopIteration:
+                    pass
+                return chunk
+            
+            severe_frames_streak = 0
+            mild_frames_streak = 0
+
+            while True:
+                chunk = await asyncio.to_thread(get_next_chunk, sync_gen, 50)
+
+                if not chunk:
+                    break
+
+                for result in chunk:
+                    total_frames += 1
+                    if result.fatigue_score:
+                        score = result.fatigue_score
+
+                        if score.level == "severe_fatigue":
+                            severe_frames_streak += 1
+                            mild_frames_streak = 0
+                            if severe_frames_streak > 30:
+                                worst_level = "severe_fatigue"
+
+                        elif score.level == "mild_fatigue" and worst_level == "alert":
+                            mild_frames_streak += 1
+                            severe_frames_streak = 0
+                            if mild_frames_streak > 30 and worst_level == "alert":
+                                worst_level = "mild_fatigue"
+                        
+                        else:
+                            severe_frames_streak = 0
+                            mild_frames_streak = 0
+
+                        if score.events:
+                            for e in score.events:
+                                event_key = (e.event_type, e.timestamp)
+
+                                if event_key not in seen_events:
+                                    seen_events.add(event_key)
+                                    events_collected.append({
+                                        "event_type": e.event_type,
+                                        "timestamp_sec": e.timestamp,
+                                        "duration_sec": e.duration_sec,
+                                        "severity": e.severity,
+                                        "metadata": e.metadata,
+                                    })
+
 
             duration = time.time() - start_time
 
@@ -193,16 +251,18 @@ async def _process_video_background(
 
         except Exception as e:
             logger.error(f"Error processing video for session {session_id}: {e}", exc_info=True)
+            await db.rollback()
             await service.update_session(session_id, status="failed", error=str(e))
             await db.commit()
         finally:
-            active_sessions.dec()
-            if os.path.exists(tmp_dir):
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+            if incremented:
+                active_sessions.dec()
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @router.post("/upload", response_model=AnalysisSessionStatus, status_code=202)
 async def upload_video(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(..., description="Video file (MP4, AVI, MOV, etc.)"),
     pipeline = Depends(get_ml_pipeline),
@@ -213,23 +273,49 @@ async def upload_video(
     if file.content_type not in allowed_types:
         raise HTTPException(status_code=415, detail=f"Unsupported type. Allowed: {allowed_types}")
 
-    session = await service.create_session(source_type="video", source_name=file.filename)
-    await db.commit() 
+    MAX_SIZE_BYTES = settings.VIDEO_MAX_SIZE_MB * 1024 * 1024
+    
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        if int(content_length) > MAX_SIZE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=
+                    f"File exceeds {settings.VIDEO_MAX_SIZE_MB}MB limit, declared: {int(content_length)/(1024*1024):.1f}MB"
+            )
 
     tmp_dir = tempfile.mkdtemp()
-    tmp_path = os.path.join(tmp_dir, file.filename)
+    suffix = Path(file.filename).suffix.lower()
+    safe_filename = f"{uuid4().hex}{suffix}"
+    tmp_path = os.path.join(tmp_dir, safe_filename)
     
     try:
+        chunks = []
+        total = 0
+        while chunk := await file.read(65536):
+            total += len(chunk)
+            if total > MAX_SIZE_BYTES:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                raise HTTPException(status_code=413, detail=f"File exceeds {settings.VIDEO_MAX_SIZE_MB}MB limit")
+            chunks.append(chunk)
+        
         with open(tmp_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
-            
-        file_size = os.path.getsize(tmp_path)
-        if file_size > settings.VIDEO_MAX_SIZE_MB * 1024 * 1024:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            raise HTTPException(status_code=413, detail=f"File exceeds {settings.VIDEO_MAX_SIZE_MB}MB limit")
+            f.write(b"".join(chunks))
 
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reading uploaded file: {e}")
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=f"Failed to process uploaded file: {str(e)}")
     finally:
         await file.close()
+
+    session = await service.create_session(source_type="video", source_name=file.filename)
+    await db.commit()
+
+    db_sessionmaker = getattr(request.app.state, "db_sessionmaker", None)
 
     background_tasks.add_task(
         _process_video_background,
@@ -237,6 +323,7 @@ async def upload_video(
         tmp_path=tmp_path,
         tmp_dir=tmp_dir,
         pipeline=pipeline,
+        db_sessionmaker=db_sessionmaker,
     )
 
     return session

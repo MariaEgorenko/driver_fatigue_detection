@@ -1,19 +1,13 @@
 import logging
 from fastapi import APIRouter, Request, Response, status
-from pydantic import BaseModel
 from sqlalchemy import text
+import asyncio
 
-from backend.app.core.database import engine
+from backend.app.schemas.health import HealthResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-class HealthResponse(BaseModel):
-    status: str
-    model_loaded: bool
-    db_connected: bool
 
 
 @router.get("", response_model=HealthResponse)
@@ -29,16 +23,29 @@ async def health_check(request: Request, response: Response):
     db_connected = False
 
     try:
-        if hasattr(request.app, "state") and hasattr(request.app.state, "ml_pipeline"):
-            model_loaded = request.app.state.ml_pipeline is not None
+        model_loaded = (
+            hasattr(request.app.state, "ml_pipeline")
+            and request.app.state.ml_pipeline is not None
+        )
     except Exception as e:
         logger.error(f"HealthCheck: Error checking ML pipeline state: {e}")
 
+    db_connected = False
     try:
+        engine = getattr(request.app.state, "engine", None)
+
         if engine is not None:
-            async with engine.connect() as conn:
-                result = await conn.execute(text("SELECT 1"))
-                db_connected = result.scalar() == 1
+            async def _check_db():
+                async with engine.connect() as conn:
+                    result = await conn.execute(text("SELECT 1"))
+                    return result.scalar() == 1
+                
+            db_connected = await asyncio.wait_for(_check_db(), timeout=3.0)
+        else:
+            logger.error("HealthCheck: Engine not found in app.state")
+
+    except asyncio.TimeoutError:
+        logger.error("HealthCheck: Database connection timed out")
     except Exception as e:
         logger.error(f"HealthCheck: Database connection failed: {e}")
 
@@ -46,12 +53,9 @@ async def health_check(request: Request, response: Response):
     
     if not is_healthy:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        overall_status = "degraded"
-    else:
-        overall_status = "ok"
 
     return HealthResponse(
-        status=overall_status,
+        status="ok" if is_healthy else "degraded",
         model_loaded=model_loaded,
         db_connected=db_connected
     )
