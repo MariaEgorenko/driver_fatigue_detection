@@ -20,6 +20,8 @@ class FatigueEventSchema(BaseModel):
     severity: SeverityLevel
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
 
 class EventFilter(BaseModel):
     """Request parameters for filtering API events."""
