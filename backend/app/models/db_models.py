@@ -24,9 +24,9 @@ class AnalysisSession(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     created_at: Mapped[datetime] = mapped_column(
-    default=func.now(),
-    server_default=func.now()
-)
+        default=func.now(),
+        server_default=func.now()
+    )
     status: Mapped[SessionStatus] = mapped_column(
         Enum(SessionStatus, name="session_status", values_callable=lambda x: [e.value for e in x]), 
         default=SessionStatus.PENDING
@@ -67,7 +67,7 @@ class FatigueEventDB(Base):
     event_type: Mapped[EventType] = mapped_column(
         Enum(EventType, name="event_type", values_callable=lambda x: [e.value for e in x]), index=True
     )
-    timestamp_sec: Mapped[float] = mapped_column(Float)
+    timestamp_sec: Mapped[float] = mapped_column(Float, index=True)
     duration_sec: Mapped[float | None] = mapped_column(Float)
     severity: Mapped[SeverityLevel] = mapped_column(
         Enum(SeverityLevel, name="severity", values_callable=lambda x: [e.value for e in x])
@@ -86,9 +86,11 @@ class FrameResultDB(Base):
     session_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("analysis_sessions.id", ondelete="CASCADE"), index=True
     )
-    frame_index: Mapped[int] = mapped_column(Integer)
-    timestamp_sec: Mapped[float] = mapped_column(Float)
-    fatigue_level: Mapped[FatigueLevel | None] = mapped_column()
+    frame_index: Mapped[int] = mapped_column(Integer, index=True)
+    timestamp_sec: Mapped[float] = mapped_column(Float, index=True)
+    fatigue_level: Mapped[FatigueLevel | None] = mapped_column(
+        Enum(FatigueLevel, name="fatigue_level", values_callable=lambda x: [e.value for e in x])
+    )
     perclos: Mapped[float | None] = mapped_column(Float)
     blink_rate: Mapped[float | None] = mapped_column(Float)
     yawn_count: Mapped[int | None] = mapped_column(Integer)
