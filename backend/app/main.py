@@ -19,6 +19,9 @@ app = FastAPI(
     title="Driver Fatigue Detection API",
     version="1.0.0",
     description="API for detecting driver fatigue using CV/ML models",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
     lifespan=lifespan,
 )
 
