@@ -5,8 +5,6 @@ from pydantic import Field, model_validator
 
 class Settings(BaseSettings):
     DATABASE_URL: str
-    MLFLOW_TRACKING_URI: str = Field(default="http://mlflow:5000")
-    ML_MODEL_PATH: str = "ml/models/pipeline.pkl"
 
     # App constraints
     MAX_FRAME_SIZE_MB: int = Field(default=10, gt=0)

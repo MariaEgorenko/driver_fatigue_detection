@@ -2,12 +2,11 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Dict
-import copy
 
 from fastapi import FastAPI, Request
 
 from ml.src.inference.video_pipeline import VideoPipeline
-from backend.app.core.model_loader import load_model_from_registry
+from backend.app.core.config import get_settings
 from backend.app.core.database import setup_db, init_models
 
 logger = logging.getLogger(__name__)
@@ -20,7 +19,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Application lifespan handler.
 
     Startup:
-    - Load ML pipeline from MLflow Registry or file or create default
+    - Initialize ML pipeline directly from Config
     - Initialize database connection pool
 
     Shutdown:
@@ -29,7 +28,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting up application: Loading ML pipeline and DB...")
 
     try:
-        app.state.ml_pipeline = await asyncio.to_thread(load_model_from_registry)
+        settings = get_settings()
+        app.state.ml_pipeline = VideoPipeline(settings)
         logger.info("ML Pipeline loaded successfully.")
     except Exception as e:
         logger.critical(f"Failed to load ML Pipeline: {e}")
@@ -72,12 +72,16 @@ def get_ml_pipeline(request: Request) -> VideoPipeline:
         so that requests don't mix their FeatureWindows.
     """
     base_pipeline = getattr(request.app.state, "ml_pipeline", None)
+    if base_pipeline is None:
+        raise RuntimeError("ML Pipeline is not initialized")
     return VideoPipeline(base_pipeline._config)
 
 def get_streaming_pipeline(session_id: str, request: Request) -> VideoPipeline:
     """For real-time streaming frame by frame (we maintain context between requests)"""
     if session_id not in active_pipelines:
         base_pipeline = getattr(request.app.state, "ml_pipeline", None)
+        if base_pipeline is None:
+            raise RuntimeError("ML Pipeline is not initialized")
         active_pipelines[session_id] = VideoPipeline(base_pipeline._config)
         
     return active_pipelines[session_id]

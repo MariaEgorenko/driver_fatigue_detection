@@ -21,7 +21,6 @@ opencv-python-headless>=4.9.0
 mediapipe==0.10.11
 
 # --- MLOps & Observability ---
-mlflow>=2.11.0
 prometheus-client>=0.20.0
 
 # --- Testing ---
