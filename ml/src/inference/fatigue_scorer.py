@@ -1,5 +1,5 @@
 import logging
-from typing import List
+from typing import List, Optional
 
 from ml.src.types import (
     FeatureWindow,
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 YAWN_COUNT_WINDOW_SEC = 300.0  # 5 minutes to count yawns
 HEAD_DOWN_RECENT_FRAMES = 10 # how many of the last frames should I count
-
+HEAD_DOWN_SEVERE_THRESHOLD_SEC = 3.0
 
 class FatigueScorer:
     def __init__(self, config) -> None:
@@ -25,6 +25,7 @@ class FatigueScorer:
         self._last_score_time = -100.0
         self._last_headdown_event_time = -100.0
         self._last_reported_absence_start = -100.0
+        self._head_down_start_time: Optional[float] = None
 
     def score(self, window: FeatureWindow) -> FatigueScore:
         """Aggregate attributes in FatigueScore."""
@@ -64,6 +65,14 @@ class FatigueScorer:
                 if pose is not None and abs(pose.pitch) > self._config.HEAD_PITCH_THRESHOLD_DEG
             )
             head_down = head_down_count >= (HEAD_DOWN_RECENT_FRAMES * 0.7)
+
+        head_down_duration_sec = 0.0
+        if head_down:
+            if self._head_down_start_time is None:
+                self._head_down_start_time = current_time
+            head_down_duration_sec = current_time - self._head_down_start_time
+        else:
+            self._head_down_start_time = None
 
         # 5. Determine face_absen
         face_absent = False
@@ -136,6 +145,7 @@ class FatigueScorer:
             perclos=perclos,
             yawn_count=yawn_count,
             head_down=head_down,
+            head_down_duration_sec=head_down_duration_sec,
             face_absent=face_absent
         )
 
@@ -149,6 +159,7 @@ class FatigueScorer:
             head_down=head_down,
             face_absent=face_absent,
             window_size=len(window.timestamps),
+            head_down_duration_sec=head_down_duration_sec,
         )
 
         return FatigueScore(
@@ -163,7 +174,8 @@ class FatigueScorer:
         )
     
     def _determine_level(
-        self, perclos: float, yawn_count: int, head_down: bool, face_absent: bool
+        self, perclos: float, yawn_count: int, head_down: bool, 
+        face_absent: bool, head_down_duration_sec: float = 0.0
     ) -> FatigueLevel:
         """Determine fatigue level based on criteria."""
         severe_conditions = (
@@ -172,6 +184,7 @@ class FatigueScorer:
             face_absent,
             perclos > self._config.PERCLOS_MILD and yawn_count >= 2,
             perclos > self._config.PERCLOS_MILD and head_down,
+            head_down and head_down_duration_sec >= HEAD_DOWN_SEVERE_THRESHOLD_SEC,
         )
         if any(severe_conditions):
             return "severe_fatigue"
@@ -179,7 +192,7 @@ class FatigueScorer:
         mild_conditions = (
             perclos > self._config.PERCLOS_MILD,
             yawn_count >= 2,
-            head_down,
+            head_down and head_down_duration_sec < HEAD_DOWN_SEVERE_THRESHOLD_SEC,
         )
         if any(mild_conditions):
             return "mild_fatigue"
@@ -194,6 +207,7 @@ class FatigueScorer:
         head_down: bool,
         face_absent: bool,
         window_size: int,
+        head_down_duration_sec: float = 0.0,
     ) -> float:
         """Calculate confidence score."""
         # Short window
@@ -207,6 +221,7 @@ class FatigueScorer:
                 face_absent,
                 perclos > self._config.PERCLOS_MILD and yawn_count >= 2,
                 perclos > self._config.PERCLOS_MILD and head_down,
+                head_down and head_down_duration_sec >= HEAD_DOWN_SEVERE_THRESHOLD_SEC,
             )
             criteria_met = sum(severe_conditions)
             
