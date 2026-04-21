@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 import cv2
 import numpy as np
+import uuid
 
 from backend.app.main import app
 
@@ -18,10 +19,12 @@ def test_analyze_frame_black_image(client: TestClient):
     assert success is True
     jpg_data = buffer.tobytes()
 
+    test_uuid = str(uuid.uuid4())
+
     response = client.post(
         "/api/v1/analysis/frame",
         files={"frame": ("test.jpg", jpg_data, "image/jpeg")},
-        data={"session_id": "test-session-123", "timestamp": 1234567890.0},
+        data={"session_id": test_uuid, "timestamp": 1234567890.0},
     )
 
     assert response.status_code == 200, f"Expected 200, got {response.status_code}. Detail: {response.text}"
@@ -37,7 +40,7 @@ def test_analyze_frame_invalid_format(client: TestClient):
     response = client.post(
         "/api/v1/analysis/frame",
         files={"frame": ("test.txt", b"not an image", "text/plain")},
-        data={"session_id": "test-session-123"},
+        data={"session_id": str(uuid.uuid4())},
     )
 
     assert response.status_code == 400
@@ -54,8 +57,8 @@ def test_analyze_frame_missing_session_id(client: TestClient):
         files={"frame": ("test.jpg", jpg_data, "image/jpeg")}
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 200, f"Expected 200, got {response.status_code}"
     response_data = response.json()
     
-    detail = response_data["detail"]
-    assert any(error["loc"] == ["body", "session_id"] for error in detail)
+    assert "session_id" in response_data
+    assert response_data["session_id"] is not None
