@@ -42,7 +42,7 @@ class TestFatigueScorer:
     def test_severe_high_perclos(self, scorer):
         """Test PERCLOS=0.8 returns severe_fatigue."""
         current_time = time.time()
-        n_frames = 15
+        n_frames = 35
         
         timestamps = [current_time - n_frames + i for i in range(n_frames)]
 
@@ -75,14 +75,14 @@ class TestFatigueScorer:
         ]
 
         window = FeatureWindow(
-            ear_history=[0.5] * 5,
-            timestamps=[current_time - 5 + i for i in range(5)],
-            mar_history=[0.1] * 5,
-            head_poses=[HeadPose(pitch=0, yaw=0, roll=0)] * 5,
+            ear_history=[0.5] * 35,
+            timestamps=[current_time - 35 + i for i in range(35)],
+            mar_history=[0.1] * 35,
+            head_poses=[HeadPose(pitch=0, yaw=0, roll=0)] * 35,
             blink_events=[],
             yawn_events=yawns,
             absence_events=[],
-            face_detected_flags=[True] * 5,
+            face_detected_flags=[True] * 35,
         )
 
         score = scorer.score(window)
@@ -93,10 +93,11 @@ class TestFatigueScorer:
     def test_mild_medium_perclos(self, scorer):
         """Test PERCLOS=0.40 returns mild_fatigue."""
         current_time = time.time()
-        n_frames = 10
+        n_frames = 50
         
         timestamps = [current_time - n_frames + i for i in range(n_frames)]
-        ear_history = [0.5] * 6 + [0.1] * 4  # 4 closed out of 10 = 0.40
+        # 60% open, 40% closed
+        ear_history = [0.5] * 30 + [0.1] * 20
 
         window = FeatureWindow(
             ear_history=ear_history,
@@ -172,15 +173,17 @@ class TestFatigueScorer:
             YawnEvent(timestamp=current_time - 100, duration_sec=2.0, max_mar=0.8),
         ]
 
+        ear_history = [0.5] * 30 + [0.1] * 20
+
         window = FeatureWindow(
-            ear_history=[0.5, 0.5, 0.1, 0.1, 0.5],  # 0.40 PERCLOS
-            timestamps=[current_time - 5 + i for i in range(5)],
-            mar_history=[0.1] * 5,
-            head_poses=[HeadPose(pitch=0, yaw=0, roll=0)] * 5,
+            ear_history=ear_history,
+            timestamps=[current_time - 50 + i for i in range(50)],
+            mar_history=[0.1] * 50,
+            head_poses=[HeadPose(pitch=0, yaw=0, roll=0)] * 50,
             blink_events=[],
             yawn_events=yawns,
             absence_events=[],
-            face_detected_flags=[True] * 5,
+            face_detected_flags=[True] * 50,
         )
 
         score = scorer.score(window)
@@ -194,8 +197,8 @@ class TestFatigueScorer:
         current_time = time.time()
         n_frames = 10
         
-        # 7 normal frames, 3 frames with pitch=25.0 (threshold is 20)
-        poses = [HeadPose(pitch=0, yaw=0, roll=0)] * 7 + [HeadPose(pitch=25.0, yaw=0, roll=0)] * 3
+        # 28 normal frames, 7 frames with pitch=25.0 (threshold is 20)
+        poses = [HeadPose(pitch=0, yaw=0, roll=0)] * 28 + [HeadPose(pitch=-25.0, yaw=0, roll=0)] * 7
 
         window = FeatureWindow(
             ear_history=[0.5] * n_frames,
@@ -205,7 +208,7 @@ class TestFatigueScorer:
             blink_events=[],
             yawn_events=[],
             absence_events=[],
-            face_detected_flags=[True] * n_frames,
+            face_detected_flags=[True] * 34 + [False],
         )
 
         score = scorer.score(window)

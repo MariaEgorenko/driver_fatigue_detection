@@ -69,6 +69,12 @@ class TestHeadPoseEstimator:
 
     def test_is_head_down_true(self, estimator):
         """Test is_head_down returns True for large pitch."""
+        for _ in range(30):
+            estimator.estimate(self._create_neutral_landmarks(pitch_deg=0.0))
+
+        assert estimator._baseline_pitch is not None
+        assert abs(estimator._baseline_pitch) < 1e-3
+
         pose = HeadPose(pitch=25.0, yaw=0.0, roll=0.0)
         result = estimator.is_head_down(pose, threshold_deg=20.0)
         assert result is True
@@ -76,6 +82,12 @@ class TestHeadPoseEstimator:
     def test_is_head_down_false(self, estimator):
         """Test is_head_down returns False for small pitch."""
         pose = HeadPose(pitch=10.0, yaw=0.0, roll=0.0)
+        result = estimator.is_head_down(pose, threshold_deg=20.0)
+        assert result is False
+
+    def test_is_head_down_high_roll_override(self, estimator):
+        """Test that extreme roll angle disables head down detection."""
+        pose = HeadPose(pitch=50.0, yaw=0.0, roll=50.0)  # roll > 45
         result = estimator.is_head_down(pose, threshold_deg=20.0)
         assert result is False
 

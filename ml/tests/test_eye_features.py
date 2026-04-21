@@ -40,7 +40,7 @@ class TestEyeAnalyzer:
         points[380] = [0.65, 0.45, 0.0]  # p6 bottom
 
         return FaceLandmarks(
-            points=points, frame_width=640, frame_height=480, timestamp=time.time()
+            points=points, frame_width=500, frame_height=500, timestamp=time.time()
         )
     
     def test_ear_known_value(self, analyzer):
@@ -79,7 +79,8 @@ class TestEyeAnalyzer:
     def test_perclos_all_closed(self, analyzer):
         """Test PERCLOS with all eyes closed."""
         window = FeatureWindow(
-            ear_history=[0.1, 0.1, 0.1, 0.1, 0.1], timestamps=[1.0, 2.0, 3.0, 4.0, 5.0]
+            ear_history=[0.1] * 35,
+            timestamps=[float(i) for i in range(35)]
         )
 
         perclos = analyzer.compute_perclos(window)
@@ -88,7 +89,8 @@ class TestEyeAnalyzer:
     def test_perclos_all_open(self, analyzer):
         """Test PERCLOS with all eyes open."""
         window = FeatureWindow(
-            ear_history=[0.5, 0.5, 0.5, 0.5, 0.5], timestamps=[1.0, 2.0, 3.0, 4.0, 5.0]
+            ear_history=[0.5] * 35, 
+            timestamps=[float(i) for i in range(35)]
         )
 
         perclos = analyzer.compute_perclos(window)
@@ -113,7 +115,8 @@ class TestEyeAnalyzer:
         for ear, ts in zip(ears, timestamps):
             window.ear_history.append(ear)
             window.timestamps.append(ts)
-            detected_blinks.extend(analyzer.detect_blinks(window))
+            blinks, _ = analyzer.detect_blinks_and_closures(window)
+            detected_blinks.extend(blinks)
 
         assert len(detected_blinks) == 1
         # Blinking started at 1.2 (EAR=0.1) and ended at 1.5 (EAR=0.5)
@@ -133,7 +136,8 @@ class TestEyeAnalyzer:
         for ear, ts in zip(ears, timestamps):
             window.ear_history.append(ear)
             window.timestamps.append(ts)
-            detected_blinks.extend(analyzer.detect_blinks(window))
+            blinks, _ = analyzer.detect_blinks_and_closures(window)
+            detected_blinks.extend(blinks)
 
         assert len(detected_blinks) == 0  # Not blinking, because 800ms > 400ms
 
